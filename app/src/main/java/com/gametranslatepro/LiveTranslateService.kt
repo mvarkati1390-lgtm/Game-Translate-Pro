@@ -44,7 +44,7 @@ class LiveTranslateService : Service() {
     private var windowManager: WindowManager? = null
     private var overlay: TextView? = null
     private val translationViews = mutableListOf<TextView>()
-    @Volatile private var translationEnabled = true
+    @Volatile private var translationEnabled = false
     @Volatile private var stopping = false
     @Volatile private var processing = false
     private var lastOcrAt = 0L
@@ -316,16 +316,29 @@ class LiveTranslateService : Service() {
     private fun showOverlay(message: String) {
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         windowManager = wm
+        val params = WindowManager.LayoutParams(
+            dp(58), dp(58),
+            if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.TOP or Gravity.START; x = dp(18); y = dp(150) }
+
         val bubble = TextView(this).apply {
             text = "ترجمه"
-            textSize = 14f
+            textSize = 11f
+            gravity = Gravity.CENTER
             setTextColor(0xFFFFFFFF.toInt())
-            setPadding(22, 16, 22, 16)
-            setBackgroundColor(0xDD087BA8.toInt())
-            elevation = 12f
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(0xEE087BA8.toInt())
+                setStroke(dp(1), 0xFFB9E9FF.toInt())
+            }
+            elevation = dp(8).toFloat()
+            contentDescription = "دکمه شناور ترجمه؛ برای جابه‌جایی نگه دارید و بکشید"
             setOnClickListener {
                 translationEnabled = !translationEnabled
-                text = if (translationEnabled) "ترجمه" else "خاموش"
+                text = if (translationEnabled) "روشن" else "ترجمه"
+                lastOcrAt = 0L
                 if (!translationEnabled) clearTranslationViews()
             }
             setOnLongClickListener {
@@ -334,12 +347,47 @@ class LiveTranslateService : Service() {
                 true
             }
         }
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
-            if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        ).apply { gravity = Gravity.TOP or Gravity.END; x = 18; y = 130 }
+
+        var downRawX = 0f
+        var downRawY = 0f
+        var startX = 0
+        var startY = 0
+        var moved = false
+        var downAt = 0L
+        bubble.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    startX = params.x
+                    startY = params.y
+                    moved = false
+                    downAt = SystemClock.elapsedRealtime()
+                    true
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - downRawX).toInt()
+                    val dy = (event.rawY - downRawY).toInt()
+                    if (kotlin.math.abs(dx) > dp(5) || kotlin.math.abs(dy) > dp(5)) moved = true
+                    if (moved) {
+                        val screen = resources.displayMetrics
+                        params.x = (startX + dx).coerceIn(0, (screen.widthPixels - dp(58)).coerceAtLeast(0))
+                        params.y = (startY + dy).coerceIn(0, (screen.heightPixels - dp(58)).coerceAtLeast(0))
+                        runCatching { wm.updateViewLayout(view, params) }
+                    }
+                    true
+                }
+                android.view.MotionEvent.ACTION_UP -> {
+                    if (!moved) {
+                        if (SystemClock.elapsedRealtime() - downAt >= 650L) view.performLongClick()
+                        else view.performClick()
+                    }
+                    true
+                }
+                android.view.MotionEvent.ACTION_CANCEL -> true
+                else -> true
+            }
+        }
         wm.addView(bubble, params)
         overlay = bubble
     }
@@ -367,6 +415,8 @@ class LiveTranslateService : Service() {
             runCatching { wm.addView(label, params); translationViews.add(label) }
         }
     }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
 
     private fun clearTranslationViews() {
         val wm = windowManager
