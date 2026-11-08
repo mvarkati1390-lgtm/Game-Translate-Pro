@@ -80,6 +80,7 @@ class LiveTranslateService : Service() {
     private var audioSampleCount = 0L
     private val captureStartNs = System.nanoTime()
     private val bufferInfo = MediaCodec.BufferInfo()
+    private val audioBufferInfo = MediaCodec.BufferInfo()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
@@ -413,7 +414,7 @@ class LiveTranslateService : Service() {
     private fun drainAudioEncoder() {
         val codec = audioEncoder ?: return
         while (true) {
-            val index = codec.dequeueOutputBuffer(bufferInfo, 0)
+            val index = codec.dequeueOutputBuffer(audioBufferInfo, 0)
             when {
                 index == MediaCodec.INFO_TRY_AGAIN_LATER -> return
                 index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> synchronized(muxerLock) {
@@ -423,9 +424,9 @@ class LiveTranslateService : Service() {
                 }
                 index >= 0 -> {
                     val encoded = codec.getOutputBuffer(index)
-                    if (encoded != null && bufferInfo.size > 0 &&
-                        (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
-                        writeMuxerSample(true, encoded, bufferInfo)
+                    if (encoded != null && audioBufferInfo.size > 0 &&
+                        (audioBufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                        writeMuxerSample(true, encoded, audioBufferInfo)
                     }
                     codec.releaseOutputBuffer(index, false)
                 }
