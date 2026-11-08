@@ -1,18 +1,20 @@
 # Game Translate Pro
 
-## Implemented in 0.3.0
-- Persian RTL Compose interface and offline starter Finglish dictionary.
-- Android MediaProjection consent flow for screen recording.
-- Foreground service declared with mediaProjection type and persistent notification.
-- MP4 screen recordings saved to app-specific Movies/GameTranslatePro.
-- Basic in-app list of saved recordings.
+## نسخه 0.4.0
+- مترجم آفلاین فینگلیش و عبارت‌های رایج بازی.
+- ترجمه زنده متن انگلیسی قابل مشاهده با ML Kit OCR.
+- پنجره شناور روی بازی پس از فعال‌سازی مجوز نمایش روی برنامه‌های دیگر.
+- ضبط صفحه با رضایت و مجوز رسمی اندروید.
+- فهرست ویدیوها همراه با پخش، اشتراک‌گذاری و حذف.
 
-## Limitations
-- Android asks for screen-capture consent each time.
-- Protected games/apps may block capture or show a black frame.
-- Recordings are app-specific and removed when the app is uninstalled.
-- Playback, share and delete actions are not implemented in the downloads list yet.
-- OCR from captured frames and a floating translation overlay remain pending.
-- Unknown phrases require a larger dictionary or a translation service.
+## نصب و اجرا
+با Android Studio، JDK 17 و Android SDK 35 پروژه را باز و اجرا کنید.
+GitHub Actions نیز APK آزمایشی debug را می‌سازد.
 
-Build with Android Studio, JDK 17 and compile SDK 35.
+## نکات و محدودیت‌ها
+- برای ترجمه زنده باید مجوز «نمایش روی برنامه‌های دیگر» و مجوز ضبط صفحه را فعال کنید.
+- OCR هر حدود 1.4 ثانیه یک فریم را بررسی می‌کند تا فشار پردازشی کمتر شود.
+- ترجمه آفلاین بر پایه واژه‌نامه است؛ عبارت‌های ناشناخته ممکن است ترجمه نشوند.
+- بازی‌ها یا صفحه‌های امن ممکن است تصویر ضبط‌شده را سیاه یا مسدود کنند.
+- ضبط و ترجمه زنده دو نشست مستقل MediaProjection هستند؛ برای هرکدام اندروید اجازه جداگانه می‌گیرد.
+- ویدیوها در فضای اختصاصی برنامه ذخیره می‌شوند و با حذف برنامه پاک می‌شوند.
