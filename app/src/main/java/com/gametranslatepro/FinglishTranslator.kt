@@ -58,6 +58,31 @@ object FinglishTranslator {
         "komak" to "کمک", "lotfan" to "لطفاً",
         "merci" to "مرسی", "mamnoon" to "ممنون",
         "khodahafez" to "خداحافظ", "khoda" to "خدا",
+        "salamati" to "سلامتی", "khobish" to "خوبیش",
+        "chetoriya" to "چطوری", "chetori?" to "چطوری؟",
+        "khoobam" to "خوبم", "khoobi?" to "خوبی؟",
+        "kojayi?" to "کجایی؟", "kojai" to "کجایی",
+        "komakam" to "کمکم", "komak kon" to "کمک کن",
+        "komak konid" to "کمک کنید", "komak mikoni" to "کمک می‌کنی",
+        "bia" to "بیا", "biay" to "بیای",
+        "hamishe" to "همیشه", "hanooz" to "هنوز",
+        "fekr" to "فکر", "fek mikonam" to "فکر می‌کنم",
+        "midonam" to "می‌دونم", "nemidonam" to "نمی‌دونم",
+        "midooni" to "می‌دونی", "nemikhad" to "نمی‌خواد",
+        "mitoni" to "می‌تونی", "mitunam" to "می‌تونم",
+        "bayad" to "باید", "nabاید" to "نباید",
+        "dorosteh" to "درسته", "eshkali" to "اشکالی",
+        "bebakhshid" to "ببخشید", "bebakhsh" to "ببخش",
+        "khodet" to "خودت", "khodam" to "خودم",
+        "khodesh" to "خودش", "shoma" to "شما",
+        "hamintor" to "همین‌طور", "hamin" to "همین",
+        "alan koja" to "الان کجا", "chi shod" to "چی شد",
+        "chi migi" to "چی می‌گی", "chi mikhay" to "چی می‌خوای",
+        "bazi kon" to "بازی کن", "bazi konim" to "بازی کنیم",
+        "team beshim" to "تیم بشیم", "join sho" to "جوین شو",
+        "join besho" to "جوین بشو", "ready hasti" to "آماده‌ای",
+        "amadeam" to "آماده‌ام", "attack kon" to "حمله کن",
+        "poshtam" to "پشتم", "komakam kon" to "کمکم کن",
         "doset" to "دوستت", "daram" to "دارم",
         "nadaram" to "ندارم", "bazi" to "بازی",
         "konim" to "کنیم", "team" to "تیم",
@@ -98,8 +123,11 @@ object FinglishTranslator {
 
         val tokens = Regex("[a-zA-Z]+|[^a-zA-Z]+").findAll(normalized).map { it.value }.toList()
         val latinWords = tokens.filter { it.firstOrNull()?.isLetter() == true }
-        if (latinWords.isEmpty() || latinWords.any { it !in words }) return input
+        if (latinWords.isEmpty()) return input
+        val translatedCount = latinWords.count { it in words }
+        if (translatedCount == 0) return input
 
+        // Keep unknown words (for example player names) unchanged.
         return tokens.joinToString("") { token ->
             if (token.firstOrNull()?.isLetter() == true) words[token] ?: token else token
         }
