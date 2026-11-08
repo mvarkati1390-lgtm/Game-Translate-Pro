@@ -12,6 +12,11 @@ import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.Image
 import android.media.ImageReader
+import android.media.AudioRecord
+import android.media.AudioFormat
+import android.media.AudioAttributes
+import android.media.AudioPlaybackCaptureConfiguration
+import android.media.MediaRecorder
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
@@ -61,6 +66,19 @@ class LiveTranslateService : Service() {
     private var videoWidth = 0
     private var videoHeight = 0
     private var yuvFormat = MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
+    private var audioMode = AUDIO_BOTH
+    private var audioRecordGame: AudioRecord? = null
+    private var audioRecordMic: AudioRecord? = null
+    private var audioEncoder: MediaCodec? = null
+    private var audioThread: Thread? = null
+    private var audioTrackIndex = -1
+    private var videoFormatReady = false
+    private var audioFormatReady = false
+    private val muxerLock = Any()
+    private data class PendingSample(val audio: Boolean, val bytes: ByteArray, val pts: Long, val flags: Int)
+    private val pendingSamples = mutableListOf<PendingSample>()
+    private var audioSampleCount = 0L
+    private val captureStartNs = System.nanoTime()
     private val bufferInfo = MediaCodec.BufferInfo()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -70,6 +88,7 @@ class LiveTranslateService : Service() {
             return START_NOT_STICKY
         }
         if (intent?.action != ACTION_START) return START_NOT_STICKY
+        audioMode = intent.getStringExtra(EXTRA_AUDIO_MODE) ?: AUDIO_BOTH
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
         val data = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(EXTRA_DATA, Intent::class.java)
             else @Suppress("DEPRECATION") intent.getParcelableExtra(EXTRA_DATA)
@@ -110,6 +129,7 @@ class LiveTranslateService : Service() {
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader?.surface, null, handler
         )
         if (display == null) throw IllegalStateException("Virtual display unavailable")
+        startAudioCapture()
         showOverlay("ترجمه و ضبط هم‌زمان فعال شد…")
     }
 
@@ -189,7 +209,7 @@ class LiveTranslateService : Service() {
         val input = codec.getInputBuffer(inputIndex) ?: return
         input.clear()
         if (!writeYuv(image, input)) {
-            codec.queueInputBuffer(inputIndex, 0, 0, System.nanoTime() / 1000L, 0)
+            codec.queueInputBuffer(inputIndex, 0, 0, (System.nanoTime() - captureStartNs) / 1000L, 0)
             return
         }
         val size = input.position()
@@ -276,24 +296,168 @@ class LiveTranslateService : Service() {
             val index = codec.dequeueOutputBuffer(bufferInfo, 0)
             when {
                 index == MediaCodec.INFO_TRY_AGAIN_LATER -> return
-                index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                    if (muxerStarted) throw IllegalStateException("Encoder format changed twice")
+                index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> synchronized(muxerLock) {
                     trackIndex = muxer!!.addTrack(codec.outputFormat)
-                    muxer!!.start()
-                    muxerStarted = true
+                    videoFormatReady = true
+                    startMuxerIfReadyLocked()
                 }
                 index >= 0 -> {
                     val encoded = codec.getOutputBuffer(index)
-                    if (encoded != null && bufferInfo.size > 0 && muxerStarted &&
+                    if (encoded != null && bufferInfo.size > 0 &&
                         (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
-                        encoded.position(bufferInfo.offset)
-                        encoded.limit(bufferInfo.offset + bufferInfo.size)
-                        muxer!!.writeSampleData(trackIndex, encoded, bufferInfo)
+                        writeMuxerSample(false, encoded, bufferInfo)
                     }
                     codec.releaseOutputBuffer(index, false)
                     if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) return
                 }
             }
+        }
+    }
+
+
+    private fun startAudioCapture() {
+        if (audioMode == AUDIO_OFF) return
+        if (audioMode != AUDIO_MIC && Build.VERSION.SDK_INT < 29) {
+            audioMode = if (audioMode == AUDIO_BOTH) AUDIO_MIC else AUDIO_OFF
+            if (audioMode == AUDIO_OFF) return
+        }
+        val sampleRate = 44100
+        val channelMask = AudioFormat.CHANNEL_IN_MONO
+        val pcmFormat = AudioFormat.ENCODING_PCM_16BIT
+        val minSize = AudioRecord.getMinBufferSize(sampleRate, channelMask, pcmFormat).coerceAtLeast(8192)
+        val format = AudioFormat.Builder().setSampleRate(sampleRate).setChannelMask(channelMask).setEncoding(pcmFormat).build()
+        try {
+            if (audioMode == AUDIO_GAME || audioMode == AUDIO_BOTH) {
+                val config = AudioPlaybackCaptureConfiguration.Builder(projection!!)
+                    .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                    .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                    .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                    .build()
+                audioRecordGame = AudioRecord.Builder().setAudioFormat(format)
+                    .setAudioPlaybackCaptureConfig(config).setBufferSizeInBytes(minSize * 2).build()
+            }
+            if (audioMode == AUDIO_MIC || audioMode == AUDIO_BOTH) {
+                audioRecordMic = AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.MIC)
+                    .setAudioFormat(format).setBufferSizeInBytes(minSize * 2).build()
+            }
+            val aac = MediaCodec.createEncoderByType("audio/mp4a-latm")
+            val aacFormat = MediaFormat.createAudioFormat("audio/mp4a-latm", sampleRate, 1).apply {
+                setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                setInteger(MediaFormat.KEY_BIT_RATE, 128000)
+                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, minSize)
+            }
+            aac.configure(aacFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            aac.start()
+            audioEncoder = aac
+            audioRecordGame?.startRecording()
+            audioRecordMic?.startRecording()
+            audioThread = Thread {
+                val game = ShortArray(1024)
+                val mic = ShortArray(1024)
+                val mixed = ShortArray(1024)
+                while (!stopping && !Thread.currentThread().isInterrupted) {
+                    val gameCount = audioRecordGame?.read(game, 0, game.size) ?: -1
+                    val micCount = audioRecordMic?.read(mic, 0, mic.size) ?: -1
+                    val gameValid = gameCount > 0
+                    val micValid = micCount > 0
+                    val count = when (audioMode) {
+                        AUDIO_GAME -> gameCount
+                        AUDIO_MIC -> micCount
+                        else -> maxOf(gameCount, micCount)
+                    }
+                    if (count <= 0) { Thread.sleep(10); continue }
+                    val samples = when (audioMode) {
+                        AUDIO_GAME -> game
+                        AUDIO_MIC -> mic
+                        else -> {
+                            for (i in 0 until count) {
+                                val g = if (gameValid && i < gameCount) game[i].toInt() else 0
+                                val m = if (micValid && i < micCount) mic[i].toInt() else 0
+                                mixed[i] = ((g + m) / 2).toShort()
+                            }
+                            mixed
+                        }
+                    }
+                    feedAudioEncoder(samples, count)
+                }
+            }.apply { name = "GameTranslateAudio"; priority = Thread.NORM_PRIORITY; start() }
+        } catch (_: Exception) {
+            audioMode = AUDIO_OFF
+            runCatching { audioRecordGame?.release() }; audioRecordGame = null
+            runCatching { audioRecordMic?.release() }; audioRecordMic = null
+            runCatching { audioEncoder?.release() }; audioEncoder = null
+        }
+    }
+
+    private fun feedAudioEncoder(samples: ShortArray, count: Int) {
+        val codec = audioEncoder ?: return
+        val inputIndex = codec.dequeueInputBuffer(10000)
+        if (inputIndex >= 0) {
+            val input = codec.getInputBuffer(inputIndex) ?: return
+            input.clear()
+            val bytes = count * 2
+            if (input.remaining() >= bytes) {
+                for (i in 0 until count) {
+                    val value = samples[i].toInt()
+                    input.put((value and 0xff).toByte())
+                    input.put((value shr 8).toByte())
+                }
+                val pts = audioSampleCount * 1_000_000L / 44100L
+                codec.queueInputBuffer(inputIndex, 0, bytes, pts, 0)
+                audioSampleCount += count
+            } else codec.queueInputBuffer(inputIndex, 0, 0, 0, 0)
+        }
+        drainAudioEncoder()
+    }
+
+    private fun drainAudioEncoder() {
+        val codec = audioEncoder ?: return
+        while (true) {
+            val index = codec.dequeueOutputBuffer(bufferInfo, 0)
+            when {
+                index == MediaCodec.INFO_TRY_AGAIN_LATER -> return
+                index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> synchronized(muxerLock) {
+                    audioTrackIndex = muxer!!.addTrack(codec.outputFormat)
+                    audioFormatReady = true
+                    startMuxerIfReadyLocked()
+                }
+                index >= 0 -> {
+                    val encoded = codec.getOutputBuffer(index)
+                    if (encoded != null && bufferInfo.size > 0 &&
+                        (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                        writeMuxerSample(true, encoded, bufferInfo)
+                    }
+                    codec.releaseOutputBuffer(index, false)
+                }
+            }
+        }
+    }
+
+    private fun startMuxerIfReadyLocked() {
+        if (muxerStarted || !videoFormatReady) return
+        if (audioMode != AUDIO_OFF && !audioFormatReady) return
+        muxer!!.start()
+        muxerStarted = true
+        pendingSamples.sortedBy { it.pts }.forEach { sample ->
+            val info = MediaCodec.BufferInfo().apply { set(0, sample.bytes.size, sample.pts, sample.flags) }
+            muxer!!.writeSampleData(if (sample.audio) audioTrackIndex else trackIndex, ByteBuffer.wrap(sample.bytes), info)
+        }
+        pendingSamples.clear()
+    }
+
+    private fun writeMuxerSample(audio: Boolean, source: ByteBuffer, info: MediaCodec.BufferInfo) {
+        val bytes = ByteArray(info.size)
+        val duplicate = source.duplicate()
+        duplicate.position(info.offset)
+        duplicate.limit(info.offset + info.size)
+        duplicate.get(bytes)
+        synchronized(muxerLock) {
+            if (muxerStarted) {
+                val target = if (audio) audioTrackIndex else trackIndex
+                val buffer = ByteBuffer.wrap(bytes)
+                val outInfo = MediaCodec.BufferInfo().apply { set(0, bytes.size, info.presentationTimeUs, info.flags) }
+                muxer!!.writeSampleData(target, buffer, outInfo)
+            } else pendingSamples.add(PendingSample(audio, bytes, info.presentationTimeUs, info.flags))
         }
     }
 
@@ -440,6 +604,17 @@ class LiveTranslateService : Service() {
     private fun stopCapture() {
         if (stopping) return
         stopping = true
+        try { audioRecordGame?.stop() } catch (_: Exception) {}
+        try { audioRecordMic?.stop() } catch (_: Exception) {}
+        try { audioThread?.join(700) } catch (_: Exception) {}
+        audioThread = null
+        try {
+            audioEncoder?.let { codec ->
+                val inputIndex = codec.dequeueInputBuffer(10000)
+                if (inputIndex >= 0) codec.queueInputBuffer(inputIndex, 0, 0, audioSampleCount * 1000000L / 44100L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                repeat(30) { drainAudioEncoder(); Thread.sleep(5) }
+            }
+        } catch (_: Exception) {}
         try { display?.release() } catch (_: Exception) {}
         display = null
         try { reader?.setOnImageAvailableListener(null, null); reader?.close() } catch (_: Exception) {}
@@ -454,7 +629,7 @@ class LiveTranslateService : Service() {
             val codec = encoder
             if (codec != null) {
                 val inputIndex = codec.dequeueInputBuffer(10_000)
-                if (inputIndex >= 0) codec.queueInputBuffer(inputIndex, 0, 0, System.nanoTime() / 1000L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                if (inputIndex >= 0) codec.queueInputBuffer(inputIndex, 0, 0, (System.nanoTime() - captureStartNs) / 1000L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                 repeat(80) { drainEncoder(true); Thread.sleep(10) }
             }
         } catch (_: Exception) {}
@@ -465,6 +640,12 @@ class LiveTranslateService : Service() {
         muxer = null
         muxerStarted = false
         if (outputFile?.exists() == true && outputFile!!.length() < 2048L) outputFile?.delete()
+        try { audioEncoder?.stop(); audioEncoder?.release() } catch (_: Exception) {}
+        audioEncoder = null
+        try { audioRecordGame?.release() } catch (_: Exception) {}
+        try { audioRecordMic?.release() } catch (_: Exception) {}
+        audioRecordGame = null
+        audioRecordMic = null
         try { worker?.quitSafely() } catch (_: Exception) {}
         worker = null
         handler = null
@@ -479,6 +660,11 @@ class LiveTranslateService : Service() {
         const val ACTION_STOP = "com.gametranslatepro.LIVE_STOP"
         const val EXTRA_RESULT_CODE = "live_result_code"
         const val EXTRA_DATA = "live_permission_data"
+        const val EXTRA_AUDIO_MODE = "live_audio_mode"
+        const val AUDIO_OFF = "off"
+        const val AUDIO_MIC = "mic"
+        const val AUDIO_GAME = "game"
+        const val AUDIO_BOTH = "both"
         private const val NOTIFICATION_ID = 72
     }
 }

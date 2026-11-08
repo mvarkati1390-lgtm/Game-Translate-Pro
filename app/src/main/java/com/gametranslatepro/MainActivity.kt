@@ -37,6 +37,10 @@ class MainActivity : ComponentActivity() {
     private var liveRunning by mutableStateOf(false)
     private var overlayAllowed by mutableStateOf(false)
     private var waitingForOverlayPermission = false
+    private var pendingAudioMode = LiveTranslateService.AUDIO_BOTH
+    private val audioPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) launchCaptureConsent() else Toast.makeText(this, "برای ضبط صدا باید اجازه میکروفون را بدهی.", Toast.LENGTH_LONG).show()
+    }
 
     private val liveLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
@@ -44,6 +48,7 @@ class MainActivity : ComponentActivity() {
                 action = LiveTranslateService.ACTION_START
                 putExtra(LiveTranslateService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(LiveTranslateService.EXTRA_DATA, result.data)
+                putExtra(LiveTranslateService.EXTRA_AUDIO_MODE, pendingAudioMode)
             }
             ContextCompat.startForegroundService(this, intent)
             liveRunning = true
@@ -58,7 +63,7 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize(), color = Page) {
                     GameTranslateHome(
                         liveRunning, overlayAllowed,
-                        { requestLiveTranslation() },
+                        { mode -> requestLiveTranslation(mode) },
                         {
                             startService(Intent(this, LiveTranslateService::class.java).setAction(LiveTranslateService.ACTION_STOP))
                             liveRunning = false
@@ -76,17 +81,23 @@ class MainActivity : ComponentActivity() {
         overlayAllowed = Settings.canDrawOverlays(this)
         if (waitingForOverlayPermission && overlayAllowed) {
             waitingForOverlayPermission = false
-            launchCaptureConsent()
+            requestAudioPermissionAndContinue()
         }
     }
 
-    private fun requestLiveTranslation() {
+    private fun requestLiveTranslation(mode: String) {
+        pendingAudioMode = mode
         if (!Settings.canDrawOverlays(this)) {
             waitingForOverlayPermission = true
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
             return
         }
-        launchCaptureConsent()
+        requestAudioPermissionAndContinue()
+    }
+
+    private fun requestAudioPermissionAndContinue() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) launchCaptureConsent()
+        else audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     private fun launchCaptureConsent() {
@@ -128,7 +139,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun GameTranslateHome(
     liveRunning: Boolean, overlayAllowed: Boolean,
-    onStartLive: () -> Unit, onStopLive: () -> Unit,
+    onStartLive: (String) -> Unit, onStopLive: () -> Unit,
     getRecordings: () -> List<File>, onPlay: (File) -> Unit,
     onShare: (File) -> Unit, onDelete: (File) -> Unit
 ) {
@@ -136,6 +147,7 @@ private fun GameTranslateHome(
     var result by remember { mutableStateOf(FinglishTranslator.translate("salam chetori")) }
     var selectedTab by remember { mutableIntStateOf(0) }
     var refreshDownloads by remember { mutableIntStateOf(0) }
+    var audioMode by remember { mutableStateOf(LiveTranslateService.AUDIO_BOTH) }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("GAME TRANSLATE PRO", color = Accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
@@ -176,13 +188,16 @@ private fun GameTranslateHome(
                         Text("با یک بار اجازه ضبط صفحه، متن انگلیسی بازی خوانده و در پنجره شناور ترجمه می‌شود و همان تصویر هم‌زمان به‌صورت ویدیو ذخیره می‌شود.", color = Color(0xFFB8C4D9))
                         if (!overlayAllowed) {
                             Text("برای شروع، اجازه نمایش روی برنامه‌های دیگر لازم است. پس از برگشت، درخواست ضبط صفحه خودکار باز می‌شود.", color = Color(0xFFFFC77A))
-                            Button(onClick = onStartLive, modifier = Modifier.fillMaxWidth()) { Text("فعال‌کردن و شروع") }
+                            AudioModeSelector(audioMode) { audioMode = it }
+                            Button(onClick = { onStartLive(audioMode) }, modifier = Modifier.fillMaxWidth()) { Text("فعال‌کردن و شروع") }
                         } else if (liveRunning) {
                             Text("ترجمه و ضبط هم‌زمان فعال است.", color = Color(0xFF78E0A3))
                             Button(onClick = onStopLive, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB83A4B))) { Text("توقف ترجمه و ضبط") }
                         } else {
-                            Button(onClick = onStartLive, modifier = Modifier.fillMaxWidth()) { Text("شروع ترجمه و ضبط") }
+                            AudioModeSelector(audioMode) { audioMode = it }
+                            Button(onClick = { onStartLive(audioMode) }, modifier = Modifier.fillMaxWidth()) { Text("شروع ترجمه و ضبط") }
                         }
+                        Text("صدای داخلی بازی در اندروید ۱۰ به بالا و فقط در بازی‌های سازگار ضبط می‌شود.", color = Color(0xFFFFC77A), fontSize = 12.sp)
                         Text("اندروید برای هر نشست اجازه می‌گیرد. ممکن است بازی‌های امن تصویر را مخفی کنند.", color = Color(0xFFFFC77A), fontSize = 12.sp)
                     }
                 }
@@ -209,6 +224,19 @@ private fun GameTranslateHome(
             }
         }
         Text("نسخه آزمایشی 0.5.0", color = Color(0xFF71819A), fontSize = 12.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
+    }
+}
+
+@Composable
+private fun AudioModeSelector(selected: String, onSelect: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("صدای ویدیو", color = Color.White, fontWeight = FontWeight.Bold)
+        listOf(LiveTranslateService.AUDIO_MIC to "صدای بیرون (میکروفون)", LiveTranslateService.AUDIO_GAME to "صدای داخل بازی", LiveTranslateService.AUDIO_BOTH to "هر دو صدا").forEach { (value, label) ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = selected == value, onClick = { onSelect(value) })
+                Text(label, color = Color.White)
+            }
+        }
     }
 }
 
