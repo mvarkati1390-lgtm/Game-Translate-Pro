@@ -465,15 +465,24 @@ class LiveTranslateService : Service() {
     private fun imageToBitmap(image: Image): Bitmap? {
         return try {
             val plane = image.planes[0]
-            val paddedWidth = plane.rowStride / plane.pixelStride
-            val padded = Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
             val buffer = plane.buffer
-            buffer.rewind()
-            padded.copyPixelsFromBuffer(buffer)
-            if (paddedWidth == image.width) padded else {
-                val cropped = Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
-                padded.recycle()
-                cropped
+            val width = image.width
+            val height = image.height
+            val rowStride = plane.rowStride
+            val pixelStride = plane.pixelStride
+            val pixels = IntArray(width * height)
+            for (y in 0 until height) {
+                for (x in 0 until width) {
+                    val offset = y * rowStride + x * pixelStride
+                    val red = buffer.get(offset).toInt() and 0xff
+                    val green = buffer.get(offset + 1).toInt() and 0xff
+                    val blue = buffer.get(offset + 2).toInt() and 0xff
+                    val alpha = if (pixelStride >= 4) buffer.get(offset + 3).toInt() and 0xff else 255
+                    pixels[y * width + x] = (alpha shl 24) or (red shl 16) or (green shl 8) or blue
+                }
+            }
+            Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
+                setPixels(pixels, 0, width, 0, 0, width, height)
             }
         } catch (_: Exception) { null }
     }
