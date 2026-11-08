@@ -35,7 +35,7 @@ class LiveTranslateService : Service() {
     private var windowManager: WindowManager? = null
     private var overlay: LinearLayout? = null
     private var output: TextView? = null
-    private var processing = false
+    @Volatile private var processing = false
     private var lastFrameAt = 0L
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     private var worker: HandlerThread? = null
@@ -69,14 +69,14 @@ class LiveTranslateService : Service() {
             val density = metrics.densityDpi
             reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
             reader?.setOnImageAvailableListener({ source -> processLatestFrame(source) }, handler)
+            projection?.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() { stopCapture(); stopSelf() }
+            }, handler)
             display = projection?.createVirtualDisplay(
                 "GameTranslateLiveOCR", width, height, density,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 reader?.surface, null, handler
             )
-            projection?.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() { stopCapture(); stopSelf() }
-            }, handler)
             showOverlay("ترجمه زنده آماده است؛ متن انگلیسی روی صفحه را می‌خوانم…")
         } catch (_: Exception) {
             stopCapture()
@@ -122,9 +122,11 @@ class LiveTranslateService : Service() {
             val padded = Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
             buffer.rewind()
             padded.copyPixelsFromBuffer(buffer)
-            val cropped = Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
-            padded.recycle()
-            cropped
+            if (paddedWidth == image.width) padded else {
+                val cropped = Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
+                padded.recycle()
+                cropped
+            }
         } catch (_: Exception) { null }
     }
 
