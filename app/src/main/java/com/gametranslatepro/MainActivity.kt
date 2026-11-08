@@ -8,6 +8,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
+import android.content.ClipData
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -103,9 +105,12 @@ class MainActivity : ComponentActivity() {
 
     private fun playVideo(file: File) {
         val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-        val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "video/mp4")
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        runCatching { startActivity(intent) }
+        val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "video/mp4").apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            clipData = ClipData.newUri(contentResolver, file.name, uri)
+        }
+        runCatching { startActivity(Intent.createChooser(intent, "پخش ویدیو")) }
+            .onFailure { Toast.makeText(this, "برنامه‌ای برای پخش ویدیو پیدا نشد یا فایل قابل پخش نیست.", Toast.LENGTH_LONG).show() }
     }
 
     private fun shareVideo(file: File) {
