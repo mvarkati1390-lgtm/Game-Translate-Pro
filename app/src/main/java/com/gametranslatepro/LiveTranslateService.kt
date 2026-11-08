@@ -28,6 +28,7 @@ import android.os.Environment
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.WindowManager
@@ -188,7 +189,7 @@ class LiveTranslateService : Service() {
                                     val box = line.boundingBox
                                     if (box == null) null else Triple(box, line.text, FinglishTranslator.translate(line.text))
                                 }
-                            handler?.post { renderTranslations(translated) }
+                            Handler(Looper.getMainLooper()).post { renderTranslations(translated) }
                         }
                         .addOnFailureListener { }
                         .addOnCompleteListener {
