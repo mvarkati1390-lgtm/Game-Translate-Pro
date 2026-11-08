@@ -216,7 +216,7 @@ class LiveTranslateService : Service() {
             return
         }
         val size = input.position()
-        codec.queueInputBuffer(inputIndex, 0, size, System.nanoTime() / 1000L, 0)
+        codec.queueInputBuffer(inputIndex, 0, size, (System.nanoTime() - captureStartNs) / 1000L, 0)
     }
 
     private fun writeYuv(image: Image, out: ByteBuffer): Boolean {
