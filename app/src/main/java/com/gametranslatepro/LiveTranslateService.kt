@@ -49,6 +49,7 @@ class LiveTranslateService : Service() {
     private var display: VirtualDisplay? = null
     private var windowManager: WindowManager? = null
     private var overlay: TextView? = null
+    private var shadeOverlay: android.view.View? = null
     private val translationViews = mutableListOf<TextView>()
     @Volatile private var translationEnabled = false
     @Volatile private var stopping = false
@@ -491,6 +492,24 @@ class LiveTranslateService : Service() {
     private fun showOverlay(message: String) {
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         windowManager = wm
+
+        // A subtle full-screen black tint; NOT_TOUCHABLE keeps the game controls usable.
+        val shade = android.view.View(this).apply {
+            setBackgroundColor(android.graphics.Color.argb(46, 0, 0, 0))
+            contentDescription = "لایه کم‌رنگ برای نمایش ترجمه"
+        }
+        val shadeParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.TOP or Gravity.START }
+        wm.addView(shade, shadeParams)
+        shadeOverlay = shade
+
         val params = WindowManager.LayoutParams(
             dp(58), dp(58),
             if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
@@ -635,6 +654,8 @@ class LiveTranslateService : Service() {
         clearTranslationViews()
         try { overlay?.let { windowManager?.removeView(it) } } catch (_: Exception) {}
         overlay = null
+        try { shadeOverlay?.let { windowManager?.removeView(it) } } catch (_: Exception) {}
+        shadeOverlay = null
         try { recognizer.close() } catch (_: Exception) {}
         try {
             val codec = encoder
