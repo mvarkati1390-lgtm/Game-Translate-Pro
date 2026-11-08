@@ -27,8 +27,6 @@ import android.os.SystemClock
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -44,8 +42,10 @@ class LiveTranslateService : Service() {
     private var reader: ImageReader? = null
     private var display: VirtualDisplay? = null
     private var windowManager: WindowManager? = null
-    private var overlay: LinearLayout? = null
-    private var output: TextView? = null
+    private var overlay: TextView? = null
+    private val translationViews = mutableListOf<TextView>()
+    @Volatile private var translationEnabled = true
+    @Volatile private var stopping = false
     @Volatile private var processing = false
     private var lastOcrAt = 0L
     private var lastEncodeAt = 0L
@@ -119,15 +119,20 @@ class LiveTranslateService : Service() {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         outputFile = File(folder, "GameTranslate_$stamp.mp4")
 
-        val codecName = MediaCodecListCompat.findAvcEncoder(yuvFormat)
-        val codec = if (codecName != null) MediaCodec.createByCodecName(codecName) else MediaCodec.createEncoderByType("video/avc")
-        val caps = codec.codecInfo.getCapabilitiesForType("video/avc")
-        val formats = caps.colorFormats
-        yuvFormat = when {
-            formats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
-            formats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
-            else -> throw IllegalStateException("No supported byte-buffer YUV encoder")
-        }
+        val candidates = android.media.MediaCodecList(android.media.MediaCodecList.ALL_CODECS).codecInfos
+            .filter { info -> info.isEncoder && info.supportedTypes.any { it.equals("video/avc", true) } }
+        val selected = candidates.firstNotNullOfOrNull { info ->
+            val colors = runCatching { info.getCapabilitiesForType("video/avc").colorFormats }.getOrDefault(intArrayOf())
+            when {
+                colors.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) ->
+                    info to MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
+                colors.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) ->
+                    info to MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
+                else -> null
+            }
+        } ?: throw IllegalStateException("No byte-buffer AVC encoder")
+        val codec = MediaCodec.createByCodecName(selected.first.name)
+        yuvFormat = selected.second
         val format = MediaFormat.createVideoFormat("video/avc", videoWidth, videoHeight).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, yuvFormat)
             setInteger(MediaFormat.KEY_BIT_RATE, 4_000_000)
@@ -148,7 +153,7 @@ class LiveTranslateService : Service() {
                 encodeFrame(image)
                 lastEncodeAt = now
             }
-            if (!processing && now - lastOcrAt >= 1400L) {
+            if (translationEnabled && !processing && now - lastOcrAt >= 1100L) {
                 val bitmap = imageToBitmap(image)
                 if (bitmap != null) {
                     processing = true
@@ -156,12 +161,15 @@ class LiveTranslateService : Service() {
                     recognizer.process(InputImage.fromBitmap(bitmap, 0))
                         .addOnSuccessListener { text ->
                             val lines = text.textBlocks.flatMap { it.lines }.map { it.text.trim() }.filter { it.isNotEmpty() }
-                            val translated = lines.map { FinglishTranslator.translate(it) }
-                            val displayText = if (lines.isEmpty()) "متن انگلیسی پیدا نشد." else
-                                lines.zip(translated).joinToString("\n") { (original, fa) -> "$original\n← $fa" }
-                            handler?.post { output?.text = displayText }
+                            val translated = text.textBlocks.flatMap { it.lines }
+                                .filter { it.text.isNotBlank() }
+                                .mapNotNull { line ->
+                                    val box = line.boundingBox
+                                    if (box == null) null else Triple(box, line.text, FinglishTranslator.translate(line.text))
+                                }
+                            handler?.post { renderTranslations(translated) }
                         }
-                        .addOnFailureListener { handler?.post { output?.text = "خواندن متن ناموفق بود؛ دوباره تلاش می‌کنم." } }
+                        .addOnFailureListener { }
                         .addOnCompleteListener {
                             bitmap.recycle()
                             processing = false
@@ -308,43 +316,62 @@ class LiveTranslateService : Service() {
     private fun showOverlay(message: String) {
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         windowManager = wm
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(22, 16, 22, 16)
-            setBackgroundColor(0xEE142238.toInt())
-        }
-        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        header.addView(TextView(this).apply {
-            text = "GAME TRANSLATE • زنده"
-            setTextColor(0xFF65D6FF.toInt())
-            textSize = 15f
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        header.addView(Button(this).apply {
-            text = "بستن"
-            setOnClickListener { stopCapture(); stopSelf() }
-        })
-        panel.addView(header)
-        val scroll = ScrollView(this)
-        output = TextView(this).apply {
-            text = message
+        val bubble = TextView(this).apply {
+            text = "ترجمه"
+            textSize = 14f
             setTextColor(0xFFFFFFFF.toInt())
-            textSize = 16f
-            setPadding(4, 12, 4, 8)
+            setPadding(22, 16, 22, 16)
+            setBackgroundColor(0xDD087BA8.toInt())
+            elevation = 12f
+            setOnClickListener {
+                translationEnabled = !translationEnabled
+                text = if (translationEnabled) "ترجمه" else "خاموش"
+                if (!translationEnabled) clearTranslationViews()
+            }
+            setOnLongClickListener {
+                stopCapture()
+                stopSelf()
+                true
+            }
         }
-        scroll.addView(output)
-        panel.addView(scroll, LinearLayout.LayoutParams(-1, 240))
         val params = WindowManager.LayoutParams(
-            (resources.displayMetrics.widthPixels * 0.92f).toInt(),
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
             if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = 70
+        ).apply { gravity = Gravity.TOP or Gravity.END; x = 18; y = 130 }
+        wm.addView(bubble, params)
+        overlay = bubble
+    }
+
+    private fun renderTranslations(items: List<Triple<android.graphics.Rect, String, String>>) {
+        val wm = windowManager ?: return
+        clearTranslationViews()
+        if (!translationEnabled) return
+        items.forEach { (bounds, original, translated) ->
+            if (translated.isBlank() || translated == original) return@forEach
+            val label = TextView(this).apply {
+                text = translated
+                textSize = 16f
+                setTextColor(0xFFFFF176.toInt())
+                setShadowLayer(5f, 1f, 1f, 0xFF000000.toInt())
+                setPadding(2, 0, 2, 0)
+                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            }
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply { gravity = Gravity.TOP or Gravity.START; x = bounds.left.coerceAtLeast(0); y = bounds.top.coerceAtLeast(0) }
+            runCatching { wm.addView(label, params); translationViews.add(label) }
         }
-        wm.addView(panel, params)
-        overlay = panel
+    }
+
+    private fun clearTranslationViews() {
+        val wm = windowManager
+        translationViews.toList().forEach { view -> runCatching { wm?.removeView(view) } }
+        translationViews.clear()
     }
 
     private fun buildNotification(): Notification {
@@ -361,18 +388,26 @@ class LiveTranslateService : Service() {
     }
 
     private fun stopCapture() {
+        if (stopping) return
+        stopping = true
         try { display?.release() } catch (_: Exception) {}
         display = null
         try { reader?.setOnImageAvailableListener(null, null); reader?.close() } catch (_: Exception) {}
         reader = null
         try { projection?.stop() } catch (_: Exception) {}
         projection = null
+        clearTranslationViews()
         try { overlay?.let { windowManager?.removeView(it) } } catch (_: Exception) {}
         overlay = null
-        output = null
         try { recognizer.close() } catch (_: Exception) {}
-        try { encoder?.signalEndOfInputStream() } catch (_: Exception) {}
-        try { drainEncoder(true) } catch (_: Exception) {}
+        try {
+            val codec = encoder
+            if (codec != null) {
+                val inputIndex = codec.dequeueInputBuffer(10_000)
+                if (inputIndex >= 0) codec.queueInputBuffer(inputIndex, 0, 0, System.nanoTime() / 1000L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                repeat(80) { drainEncoder(true); Thread.sleep(10) }
+            }
+        } catch (_: Exception) {}
         try { encoder?.stop(); encoder?.release() } catch (_: Exception) {}
         encoder = null
         try { if (muxerStarted) muxer?.stop() } catch (_: Exception) {}
