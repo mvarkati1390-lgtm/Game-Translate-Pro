@@ -40,7 +40,9 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale\nimport java.util.Collections\nimport java.util.concurrent.atomic.AtomicInteger
+import java.util.Locale
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import java.nio.ByteBuffer
 
 class LiveTranslateService : Service() {
