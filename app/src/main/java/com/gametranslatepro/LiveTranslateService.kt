@@ -40,7 +40,7 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
+import java.util.Locale\nimport java.util.Collections\nimport java.util.concurrent.atomic.AtomicInteger
 import java.nio.ByteBuffer
 
 class LiveTranslateService : Service() {
@@ -183,14 +183,28 @@ class LiveTranslateService : Service() {
                     lastOcrAt = now
                     recognizer.process(InputImage.fromBitmap(bitmap, 0))
                         .addOnSuccessListener { text ->
-                            val lines = text.textBlocks.flatMap { it.lines }.map { it.text.trim() }.filter { it.isNotEmpty() }
-                            val translated = text.textBlocks.flatMap { it.lines }
-                                .filter { it.text.isNotBlank() }
-                                .mapNotNull { line ->
-                                    val box = line.boundingBox
-                                    if (box == null) null else Triple(box, line.text, FinglishTranslator.translate(line.text))
+                            val recognizedLines = text.textBlocks.flatMap { it.lines }
+                                .filter { it.text.isNotBlank() && it.boundingBox != null }
+                            if (recognizedLines.isEmpty()) {
+                                Handler(Looper.getMainLooper()).post { renderTranslations(emptyList()) }
+                            } else {
+                                val translated = Collections.synchronizedList(
+                                    mutableListOf<Triple<android.graphics.Rect, String, String>>()
+                                )
+                                val remaining = AtomicInteger(recognizedLines.size)
+                                recognizedLines.forEach { line ->
+                                    val bounds = line.boundingBox ?: return@forEach
+                                    HybridTranslationEngine.translateAsync(line.text) { value ->
+                                        translated.add(Triple(bounds, line.text, value))
+                                        if (remaining.decrementAndGet() == 0) {
+                                            val completed = synchronized(translated) { translated.toList() }
+                                            Handler(Looper.getMainLooper()).post {
+                                                renderTranslations(completed)
+                                            }
+                                        }
+                                    }
                                 }
-                            Handler(Looper.getMainLooper()).post { renderTranslations(translated) }
+                            }
                         }
                         .addOnFailureListener { }
                         .addOnCompleteListener {
