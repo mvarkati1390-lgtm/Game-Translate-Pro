@@ -50,11 +50,14 @@ object FinglishTranslator {
             connectTimeout = 3500; readTimeout = 3500; requestMethod = "GET"
         }
         try {
-            if (connection.responseCode !in 200..299) return null
-            val body = connection.inputStream.bufferedReader().use { it.readText() }
-            Regex("\"translatedText\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"").find(body)?.groupValues?.get(1)
-                ?.replace("\\\"", "\"")?.replace("\\n", "\n")
-                ?.takeIf { it.isNotBlank() && !it.equals(input, true) }
+            if (connection.responseCode !in 200..299) {
+                null
+            } else {
+                val body = connection.inputStream.bufferedReader().use { it.readText() }
+                Regex("\"translatedText\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"").find(body)?.groupValues?.get(1)
+                    ?.replace("\\\"", "\"")?.replace("\\n", "\n")
+                    ?.takeIf { it.isNotBlank() && !it.equals(input, true) }
+            }
         } finally { connection.disconnect() }
     } catch (_: Exception) { null }
 }
